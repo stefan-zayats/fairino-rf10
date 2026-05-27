@@ -1,0 +1,18 @@
+{
+  "tool": 0,
+  "user": 0,
+  "velocity": 50,
+  "acceleration": 20,
+  "ovl": 100,
+  "blendRadius": 5,
+  "waitMotionDone": true,
+  "motionDonePollMs": 30,
+  "loopCount": 0,
+  "points": [
+    { "x": 300, "y": -200, "z": 120, "rx": 180, "ry": 0, "rz": 0 },
+    { "x": 700, "y": -200, "z": 120, "rx": 180, "ry": 0, "rz": 0 },
+    { "x": 700, "y": 200, "z": 120, "rx": 180, "ry": 0, "rz": 0 },
+    { "x": 300, "y": 200, "z": 120, "rx": 180, "ry": 0, "rz": 0 },
+    { "x": 300, "y": -200, "z": 120, "rx": 180, "ry": 0, "rz": 0 }
+  ]
+}

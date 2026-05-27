@@ -75,3 +75,6 @@ dotnet run -- 127.0.0.1 trajectory_infinity.json
   - уменьшайте траекторию (x/y), поднимайте z, меняйте ориентацию `rx/ry/rz`;
   - включайте предварительную IK-проверку траектории до запуска цикла.
 
+dotnet run -- 127.0.0.1 trajectory_infinity_squer.json
+dotnet run -- 127.0.0.1 trajectory_infinity_star.json
+dotnet run -- 127.0.0.1 trajectory_infinity.json
