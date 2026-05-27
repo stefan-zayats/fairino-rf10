@@ -1,0 +1,32 @@
+# Build
+bin/
+obj/
+
+# VS Code
+.vscode/
+
+# User files
+*.user
+*.suo
+
+# Logs
+*.log
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# NuGet
+packages/
+
+# Rider
+.idea/
+
+# SDK build trash
+*.pdb
+
+# Docker
+*.tar
+
+# Optional
+node_modules/
