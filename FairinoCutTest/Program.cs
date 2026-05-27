@@ -46,14 +46,31 @@ var exaxis = new ExaxisPos(0, 0, 0, 0);
 
 try
 {
+    JointPos currentJoint = new JointPos(new double[6]);
+    var currCode = robot.GetActualJointPosDegree(0, ref currentJoint);
+    if (currCode != 0)
+    {
+        Console.WriteLine($"GetActualJointPosDegree failed. err={currCode}");
+        return;
+    }
+
+    if (config.PrecheckPathWithIk)
+    {
+        var precheckCode = PrecheckTrajectoryIkAndCollision(robot, config, currentJoint);
+        if (precheckCode != 0)
+        {
+            Console.WriteLine("Trajectory precheck failed. Fix points/config and retry.");
+            return;
+        }
+    }
+
     var loopIndex = 0;
     while (!stopRequested && (config.LoopCount == 0 || loopIndex < config.LoopCount))
     {
         loopIndex++;
         Console.WriteLine($"Loop #{loopIndex}");
 
-        JointPos currentJoint = new JointPos(new double[6]);
-        var currCode = robot.GetActualJointPosDegree(0, ref currentJoint);
+        currCode = robot.GetActualJointPosDegree(0, ref currentJoint);
         if (currCode != 0)
         {
             Console.WriteLine($"GetActualJointPosDegree failed. err={currCode}");
@@ -67,6 +84,13 @@ try
                 break;
             }
 
+            if (CheckCollisionState(robot, $"before point #{i + 1}", out var collisionErr))
+            {
+                Console.WriteLine($"Collision/safety stop detected {collisionErr}. Abort trajectory.");
+                stopRequested = true;
+                break;
+            }
+
             var point = config.Points[i];
             var pose = new DescPose(point.X, point.Y, point.Z, point.Rx, point.Ry, point.Rz);
 
@@ -74,7 +98,7 @@ try
             var ikCode = robot.GetInverseKinRef(0, pose, currentJoint, ref targetJoint);
             if (ikCode != 0)
             {
-                Console.WriteLine($"IK failed at point #{i + 1}. err={ikCode}");
+                Console.WriteLine($"IK failed at point #{i + 1}. err={ikCode}. point=({point.X},{point.Y},{point.Z},{point.Rx},{point.Ry},{point.Rz}) refJ=({FormatJoint(currentJoint)})");
                 stopRequested = true;
                 break;
             }
@@ -112,6 +136,13 @@ try
                         stopRequested = true;
                         break;
                     }
+
+                    if (CheckCollisionState(robot, $"after point #{i + 1}", out collisionErr))
+                    {
+                        Console.WriteLine($"Collision/safety stop detected {collisionErr}. Abort trajectory.");
+                        stopRequested = true;
+                        break;
+                    }
                 } while (!stopRequested && done == 0);
             }
         }
@@ -121,6 +152,76 @@ finally
 {
     robot.CloseRPC();
     Console.WriteLine("RPC closed.");
+}
+
+static int PrecheckTrajectoryIkAndCollision(Robot robot, TrajectoryConfig config, JointPos startJoint)
+{
+    Console.WriteLine("Run trajectory IK precheck...");
+
+    var refJoint = startJoint;
+    for (var i = 0; i < config.Points.Count; i++)
+    {
+        if (CheckCollisionState(robot, $"during precheck point #{i + 1}", out var collisionErr))
+        {
+            Console.WriteLine($"Precheck stopped by collision/safety state {collisionErr}");
+            return -1;
+        }
+
+        var point = config.Points[i];
+        var pose = new DescPose(point.X, point.Y, point.Z, point.Rx, point.Ry, point.Rz);
+
+        var hasSolution = false;
+        var hasSolutionCode = robot.GetInverseKinHasSolution(0, pose, refJoint, ref hasSolution);
+        if (hasSolutionCode != 0)
+        {
+            Console.WriteLine($"GetInverseKinHasSolution failed at point #{i + 1}. err={hasSolutionCode}");
+            return hasSolutionCode;
+        }
+
+        if (!hasSolution)
+        {
+            Console.WriteLine($"Precheck: IK has no solution at point #{i + 1}: ({point.X},{point.Y},{point.Z},{point.Rx},{point.Ry},{point.Rz}) with refJ=({FormatJoint(refJoint)})");
+            return 112;
+        }
+
+        JointPos targetJoint = new JointPos(new double[6]);
+        var ikCode = robot.GetInverseKinRef(0, pose, refJoint, ref targetJoint);
+        if (ikCode != 0)
+        {
+            Console.WriteLine($"Precheck: GetInverseKinRef failed at point #{i + 1}. err={ikCode}");
+            return ikCode;
+        }
+
+        refJoint = targetJoint;
+    }
+
+    Console.WriteLine("Trajectory IK precheck passed.");
+    return 0;
+}
+
+static bool CheckCollisionState(Robot robot, string stage, out string stateSummary)
+{
+    var pkg = new ROBOT_STATE_PKG();
+    var stateCode = robot.GetRobotRealTimeState(ref pkg);
+    if (stateCode != 0)
+    {
+        stateSummary = $"GetRobotRealTimeState err={stateCode} at {stage}";
+        return false;
+    }
+
+    if (pkg.collisionState == 1 || pkg.EmergencyStop == 1 || pkg.main_code != 0)
+    {
+        stateSummary = $"at {stage}: collisionState={pkg.collisionState}, estop={pkg.EmergencyStop}, main_code={pkg.main_code}, sub_code={pkg.sub_code}, robot_mode={pkg.robot_mode}, robot_state={pkg.robot_state}";
+        return true;
+    }
+
+    stateSummary = string.Empty;
+    return false;
+}
+
+static string FormatJoint(JointPos joint)
+{
+    return string.Join(",", joint.jPos.Select(x => x.ToString("F3")));
 }
 
 static void PrintUsage()
@@ -140,6 +241,7 @@ internal sealed class TrajectoryConfig
     public bool WaitMotionDone { get; set; } = true;
     public int MotionDonePollMs { get; set; } = 30;
     public int LoopCount { get; set; } = 0;
+    public bool PrecheckPathWithIk { get; set; } = true;
     public List<CartPoint> Points { get; set; } = new List<CartPoint>();
 }
 
