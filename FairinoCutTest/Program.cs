@@ -107,7 +107,7 @@ try
                 break;
             }
 
-            var isFirstPoint = i == 0;
+            var isFirstPoint = i == 0 && config.StartPointWithMoveJEachLoop;
             int moveCode;
             if (isFirstPoint)
             {
@@ -266,6 +266,7 @@ internal sealed class TrajectoryConfig
     public int MotionDonePollMs { get; set; } = 30;
     public int LoopCount { get; set; } = 0;
     public bool PrecheckPathWithIk { get; set; } = true;
+    public bool StartPointWithMoveJEachLoop { get; set; } = true;
     public List<CartPoint> Points { get; set; } = new List<CartPoint>();
 }
 

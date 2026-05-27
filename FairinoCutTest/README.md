@@ -50,9 +50,28 @@ dotnet run -- 127.0.0.1 trajectory_infinity.json
 - `tool`, `user` — номера инструмента/системы координат.
 - `velocity`, `acceleration`, `ovl`, `blendRadius` — параметры движения.
 - `waitMotionDone` — ждать завершения каждой точки.
+- `startPointWithMoveJEachLoop` — входить в первую точку цикла через `MoveJ` (`true`) или идти непрерывно `MoveL` (`false`).
 - `motionDonePollMs` — период опроса завершения движения.
 - `loopCount` — количество циклов: `0` = бесконечно.
 - `points` — список поз `{x,y,z,rx,ry,rz}`.
+
+
+## 4.1 Как сделать движение более плавным (без остановок на точках)
+Для непрерывной траектории обычно помогают такие настройки:
+- `waitMotionDone: false` — не ждать полного завершения движения в каждой точке;
+- увеличить `blendRadius` (например, `10..30`) — больше скругление и меньше «торможение» в вершинах;
+- `startPointWithMoveJEachLoop: false` — не делать жёсткий `MoveJ` в начале каждого цикла.
+
+Пример:
+```json
+{
+  "blendRadius": 20,
+  "waitMotionDone": false,
+  "startPointWithMoveJEachLoop": false
+}
+```
+
+> Важно: слишком большой `blendRadius` может заметно увести траекторию от исходных точек, подбирайте по месту.
 
 ## 5) Частые проблемы
 - `RPC connect failed`:
