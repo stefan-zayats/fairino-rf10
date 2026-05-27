@@ -85,7 +85,7 @@ try
 
             if (config.WaitMotionDone)
             {
-                var done = 0;
+                byte done = 0;
                 do
                 {
                     Thread.Sleep(config.MotionDonePollMs);
