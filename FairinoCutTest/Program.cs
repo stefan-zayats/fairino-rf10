@@ -1,4 +1,4 @@
-using System.Text.Json;
+using System.Web.Script.Serialization;
 using fairino;
 
 if (args.Length == 0)
@@ -16,13 +16,9 @@ if (!File.Exists(trajectoryPath))
     return;
 }
 
-var jsonOptions = new JsonSerializerOptions
-{
-    PropertyNameCaseInsensitive = true
-};
-
-var config = JsonSerializer.Deserialize<TrajectoryConfig>(File.ReadAllText(trajectoryPath), jsonOptions);
-if (config is null || config.Points.Count < 2)
+var serializer = new JavaScriptSerializer();
+var config = serializer.Deserialize<TrajectoryConfig>(File.ReadAllText(trajectoryPath));
+if (config is null || config.Points == null || config.Points.Count < 2)
 {
     Console.WriteLine("Trajectory config invalid. Need at least 2 points.");
     return;
@@ -119,24 +115,24 @@ static void PrintUsage()
 
 internal sealed class TrajectoryConfig
 {
-    public int Tool { get; init; } = 0;
-    public int User { get; init; } = 0;
-    public float Velocity { get; init; } = 20;
-    public float Acceleration { get; init; } = 20;
-    public float Ovl { get; init; } = 100;
-    public float BlendRadius { get; init; } = 5;
-    public bool WaitMotionDone { get; init; } = true;
-    public int MotionDonePollMs { get; init; } = 30;
-    public int LoopCount { get; init; } = 0;
-    public List<CartPoint> Points { get; init; } = [];
+    public int Tool { get; set; } = 0;
+    public int User { get; set; } = 0;
+    public float Velocity { get; set; } = 20;
+    public float Acceleration { get; set; } = 20;
+    public float Ovl { get; set; } = 100;
+    public float BlendRadius { get; set; } = 5;
+    public bool WaitMotionDone { get; set; } = true;
+    public int MotionDonePollMs { get; set; } = 30;
+    public int LoopCount { get; set; } = 0;
+    public List<CartPoint> Points { get; set; } = new List<CartPoint>();
 }
 
 internal sealed class CartPoint
 {
-    public double X { get; init; }
-    public double Y { get; init; }
-    public double Z { get; init; }
-    public double Rx { get; init; }
-    public double Ry { get; init; }
-    public double Rz { get; init; }
+    public double X { get; set; }
+    public double Y { get; set; }
+    public double Z { get; set; }
+    public double Rx { get; set; }
+    public double Ry { get; set; }
+    public double Rz { get; set; }
 }

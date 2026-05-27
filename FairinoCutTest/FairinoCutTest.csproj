@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../fairino-csharp-sdk/src/FRRobot/FRRobot.csproj" />
+    <Reference Include="System.Web.Extensions" />
   </ItemGroup>
 
   <ItemGroup>
