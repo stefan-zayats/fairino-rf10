@@ -36,10 +36,12 @@ Console.WriteLine($"Connected to {robotIp}. Start trajectory from '{trajectoryPa
 Console.WriteLine("Press Ctrl+C to stop.");
 
 var stopRequested = false;
+var stopCommandSent = false;
 Console.CancelKeyPress += (_, eventArgs) =>
 {
     eventArgs.Cancel = true;
     stopRequested = true;
+    RequestSafeStop(robot, "Ctrl+C", ref stopCommandSent);
 };
 
 var exaxis = new ExaxisPos(0, 0, 0, 0);
@@ -81,6 +83,7 @@ try
         {
             if (stopRequested)
             {
+                RequestSafeStop(robot, "stop request before next point", ref stopCommandSent);
                 break;
             }
 
@@ -88,6 +91,7 @@ try
             {
                 Console.WriteLine($"Collision/safety stop detected {collisionErr}. Abort trajectory.");
                 stopRequested = true;
+                RequestSafeStop(robot, "collision/safety state before move", ref stopCommandSent);
                 break;
             }
 
@@ -118,6 +122,7 @@ try
             {
                 Console.WriteLine($"{(isFirstPoint ? "MoveJ" : "MoveL")} failed at point #{i + 1} ({point.X},{point.Y},{point.Z}), err={moveCode}");
                 stopRequested = true;
+                RequestSafeStop(robot, "move command failed", ref stopCommandSent);
                 break;
             }
 
@@ -134,6 +139,7 @@ try
                     {
                         Console.WriteLine($"GetRobotMotionDone failed. err={doneCode}");
                         stopRequested = true;
+                        RequestSafeStop(robot, "motion done polling failed", ref stopCommandSent);
                         break;
                     }
 
@@ -141,6 +147,7 @@ try
                     {
                         Console.WriteLine($"Collision/safety stop detected {collisionErr}. Abort trajectory.");
                         stopRequested = true;
+                        RequestSafeStop(robot, "collision/safety state after move", ref stopCommandSent);
                         break;
                     }
                 } while (!stopRequested && done == 0);
@@ -217,6 +224,23 @@ static bool CheckCollisionState(Robot robot, string stage, out string stateSumma
 
     stateSummary = string.Empty;
     return false;
+}
+
+static void RequestSafeStop(Robot robot, string reason, ref bool stopCommandSent)
+{
+    if (stopCommandSent)
+    {
+        return;
+    }
+
+    stopCommandSent = true;
+    Console.WriteLine($"Request controlled stop. reason={reason}");
+
+    var stopMotionCode = robot.StopMotion();
+    Console.WriteLine($"StopMotion -> err={stopMotionCode}");
+
+    var programStopCode = robot.ProgramStop();
+    Console.WriteLine($"ProgramStop -> err={programStopCode}");
 }
 
 static string FormatJoint(JointPos joint)
