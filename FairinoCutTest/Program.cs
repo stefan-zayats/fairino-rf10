@@ -36,10 +36,12 @@ Console.WriteLine($"Connected to {robotIp}. Start trajectory from '{trajectoryPa
 Console.WriteLine("Press Ctrl+C to stop.");
 
 var stopRequested = false;
+var stopCommandSent = false;
 Console.CancelKeyPress += (_, eventArgs) =>
 {
     eventArgs.Cancel = true;
     stopRequested = true;
+    RequestSafeStop(robot, "Ctrl+C", ref stopCommandSent);
 };
 
 var exaxis = new ExaxisPos(0, 0, 0, 0);
@@ -79,8 +81,14 @@ try
 
         for (var i = 0; i < config.Points.Count; i++)
         {
+            if (HandleWebPanelState(robot, ref stopRequested, ref stopCommandSent))
+            {
+                break;
+            }
+
             if (stopRequested)
             {
+                RequestSafeStop(robot, "stop request before next point", ref stopCommandSent);
                 break;
             }
 
@@ -88,6 +96,7 @@ try
             {
                 Console.WriteLine($"Collision/safety stop detected {collisionErr}. Abort trajectory.");
                 stopRequested = true;
+                RequestSafeStop(robot, "collision/safety state before move", ref stopCommandSent);
                 break;
             }
 
@@ -118,6 +127,7 @@ try
             {
                 Console.WriteLine($"{(isFirstPoint ? "MoveJ" : "MoveL")} failed at point #{i + 1} ({point.X},{point.Y},{point.Z}), err={moveCode}");
                 stopRequested = true;
+                RequestSafeStop(robot, "move command failed", ref stopCommandSent);
                 break;
             }
 
@@ -128,12 +138,18 @@ try
                 byte done = 0;
                 do
                 {
+                    if (HandleWebPanelState(robot, ref stopRequested, ref stopCommandSent))
+                    {
+                        break;
+                    }
+
                     Thread.Sleep(config.MotionDonePollMs);
                     var doneCode = robot.GetRobotMotionDone(ref done);
                     if (doneCode != 0)
                     {
                         Console.WriteLine($"GetRobotMotionDone failed. err={doneCode}");
                         stopRequested = true;
+                        RequestSafeStop(robot, "motion done polling failed", ref stopCommandSent);
                         break;
                     }
 
@@ -141,6 +157,7 @@ try
                     {
                         Console.WriteLine($"Collision/safety stop detected {collisionErr}. Abort trajectory.");
                         stopRequested = true;
+                        RequestSafeStop(robot, "collision/safety state after move", ref stopCommandSent);
                         break;
                     }
                 } while (!stopRequested && done == 0);
@@ -216,6 +233,74 @@ static bool CheckCollisionState(Robot robot, string stage, out string stateSumma
     }
 
     stateSummary = string.Empty;
+    return false;
+}
+
+static void RequestSafeStop(Robot robot, string reason, ref bool stopCommandSent)
+{
+    if (stopCommandSent)
+    {
+        return;
+    }
+
+    stopCommandSent = true;
+    Console.WriteLine($"Request controlled stop. reason={reason}");
+
+    var stopMotionCode = robot.StopMotion();
+    Console.WriteLine($"StopMotion -> err={stopMotionCode}");
+
+    var programStopCode = robot.ProgramStop();
+    Console.WriteLine($"ProgramStop -> err={programStopCode}");
+}
+
+static bool HandleWebPanelState(Robot robot, ref bool stopRequested, ref bool stopCommandSent)
+{
+    var pkg = new ROBOT_STATE_PKG();
+    var stateCode = robot.GetRobotRealTimeState(ref pkg);
+    if (stateCode != 0)
+    {
+        return false;
+    }
+
+    // program_state: 1-stop, 2-run, 3-pause
+    if (pkg.program_state == 1)
+    {
+        stopRequested = true;
+        RequestSafeStop(robot, "web panel stop", ref stopCommandSent);
+        return true;
+    }
+
+    if (pkg.program_state == 3)
+    {
+        Console.WriteLine("Web panel pause detected. Waiting for resume/stop...");
+        while (true)
+        {
+            Thread.Sleep(100);
+            var pollPkg = new ROBOT_STATE_PKG();
+            var pollCode = robot.GetRobotRealTimeState(ref pollPkg);
+            if (pollCode != 0)
+            {
+                Console.WriteLine($"Pause polling state read failed. err={pollCode}");
+                stopRequested = true;
+                RequestSafeStop(robot, "pause polling failed", ref stopCommandSent);
+                return true;
+            }
+
+            if (pollPkg.program_state == 1)
+            {
+                stopRequested = true;
+                RequestSafeStop(robot, "web panel stop while paused", ref stopCommandSent);
+                return true;
+            }
+
+            if (pollPkg.program_state == 2)
+            {
+                Console.WriteLine("Web panel resume detected. Continue trajectory.");
+                return false;
+            }
+        }
+    }
+
     return false;
 }
 
