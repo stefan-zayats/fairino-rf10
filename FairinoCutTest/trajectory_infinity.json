@@ -5,6 +5,9 @@
   "acceleration": 20,
   "ovl": 100,
   "blendRadius": 5,
+  "waitMotionDone": true,
+  "motionDonePollMs": 30,
+  "loopCount": 0,
   "points": [
     { "x": 450, "y": 0, "z": 320, "rx": 180, "ry": 0, "rz": 0 },
     { "x": 500, "y": 60, "z": 320, "rx": 180, "ry": 0, "rz": 0 },
