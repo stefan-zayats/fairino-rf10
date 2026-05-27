@@ -7,4 +7,14 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="../fairino-csharp-sdk/src/FRRobot/FRRobot.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="trajectory_infinity.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
