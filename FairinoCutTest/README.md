@@ -1,15 +1,49 @@
 # FairinoCutTest: движение робота по точкам из файла
 
-## Что делает пример
-Консольное приложение подключается к контроллеру/симулятору Fairino по IP и выполняет `MoveL` по списку Cartesian-точек из JSON-файла.
+## Почему у вас ошибка MSB3644
+Ошибка
 
-## 1) Подготовка
-1. Запусти контейнер симулятора (как у тебя в примере).
-2. Убедись, что из хоста доступен IP симулятора в сети `fairino-net`.
-   - Если приложение запускается на **Windows-хосте**, обычно проще пробовать `127.0.0.1` (порт-маппинг уже сделан).
-   - Если приложение запускается из **другого контейнера в `fairino-net`**, используй IP/имя контейнера внутри сети Docker.
+`MSB3644: не найдены ссылочные сборки для .NETFramework,Version=v4.8.1`
 
-## 2) Формат файла точек
+означает, что на ПК **не установлен .NET Framework 4.8.1 Developer Pack (Targeting Pack)**.
+Проект `FairinoCutTest` и SDK `FRRobot` собираются под `net481`, поэтому без targeting pack сборка невозможна.
+
+## 1) Что обязательно установить на Windows
+Установите **один** из вариантов:
+
+1. **Visual Studio 2022** с компонентом:
+   - `.NET Framework 4.8.1 SDK`
+   - `.NET Framework 4.8.1 targeting pack`
+2. Или **Build Tools for Visual Studio 2022** с теми же компонентами.
+3. Или напрямую **.NET Framework 4.8.1 Developer Pack**:
+   - https://aka.ms/msbuild/developerpacks
+
+После установки обязательно **перезапустите PowerShell/терминал**.
+
+## 2) Проверка, что targeting pack установлен
+В PowerShell:
+
+```powershell
+Test-Path "C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8.1"
+```
+
+Если команда вернула `True` — можно собирать проект.
+
+## 3) Запуск симулятора и приложения
+### 3.1 Поднимите контейнер симулятора
+(как в вашем примере с `-p ...` и `--net fairino-net`).
+
+### 3.2 Запустите приложение
+Из каталога `FairinoCutTest`:
+
+```powershell
+dotnet restore
+dotnet run -- 127.0.0.1 trajectory_infinity.json
+```
+
+> Если приложение запускается в другом контейнере, используйте IP/hostname из `fairino-net`, а не `127.0.0.1`.
+
+## 4) Формат файла точек
 Файл по умолчанию: `trajectory_infinity.json`.
 
 Параметры:
@@ -20,20 +54,7 @@
 - `loopCount` — количество циклов: `0` = бесконечно.
 - `points` — список поз `{x,y,z,rx,ry,rz}`.
 
-## 3) Запуск
-Из папки `FairinoCutTest`:
-
-```bash
-dotnet run -- 127.0.0.1 trajectory_infinity.json
-```
-
-Где:
-- `127.0.0.1` — IP контроллера/симулятора (подставь свой, если другой).
-- второй аргумент — путь к JSON (опционально, по умолчанию `trajectory_infinity.json`).
-
-Остановка: `Ctrl+C`.
-
-## 4) Частые проблемы
+## 5) Частые проблемы
 - `RPC connect failed`:
   - неверный IP;
   - контейнер не поднят;
