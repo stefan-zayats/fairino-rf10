@@ -43,7 +43,6 @@ Console.CancelKeyPress += (_, eventArgs) =>
 };
 
 var exaxis = new ExaxisPos(0, 0, 0, 0);
-var zeroJoint = new JointPos(0, 0, 0, 0, 0, 0);
 
 try
 {
@@ -52,6 +51,14 @@ try
     {
         loopIndex++;
         Console.WriteLine($"Loop #{loopIndex}");
+
+        JointPos currentJoint = new JointPos(new double[6]);
+        var currCode = robot.GetActualJointPosDegree(0, ref currentJoint);
+        if (currCode != 0)
+        {
+            Console.WriteLine($"GetActualJointPosDegree failed. err={currCode}");
+            break;
+        }
 
         for (var i = 0; i < config.Points.Count; i++)
         {
@@ -62,26 +69,35 @@ try
 
             var point = config.Points[i];
             var pose = new DescPose(point.X, point.Y, point.Z, point.Rx, point.Ry, point.Rz);
-            var moveCode = robot.MoveL(
-                zeroJoint,
-                pose,
-                config.Tool,
-                config.User,
-                config.Velocity,
-                config.Acceleration,
-                config.Ovl,
-                config.BlendRadius,
-                exaxis,
-                0,
-                0,
-                pose);
 
-            if (moveCode != 0)
+            JointPos targetJoint = new JointPos(new double[6]);
+            var ikCode = robot.GetInverseKinRef(0, pose, currentJoint, ref targetJoint);
+            if (ikCode != 0)
             {
-                Console.WriteLine($"MoveL failed at point #{i + 1} ({point.X},{point.Y},{point.Z}), err={moveCode}");
+                Console.WriteLine($"IK failed at point #{i + 1}. err={ikCode}");
                 stopRequested = true;
                 break;
             }
+
+            var isFirstPoint = i == 0;
+            int moveCode;
+            if (isFirstPoint)
+            {
+                moveCode = robot.MoveJ(targetJoint, pose, config.Tool, config.User, config.Velocity, config.Acceleration, config.Ovl, exaxis, -1, 0, pose);
+            }
+            else
+            {
+                moveCode = robot.MoveL(targetJoint, pose, config.Tool, config.User, config.Velocity, config.Acceleration, config.Ovl, config.BlendRadius, exaxis, 0, 0, pose);
+            }
+
+            if (moveCode != 0)
+            {
+                Console.WriteLine($"{(isFirstPoint ? "MoveJ" : "MoveL")} failed at point #{i + 1} ({point.X},{point.Y},{point.Z}), err={moveCode}");
+                stopRequested = true;
+                break;
+            }
+
+            currentJoint = targetJoint;
 
             if (config.WaitMotionDone)
             {
