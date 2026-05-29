@@ -115,6 +115,8 @@ dotnet run -- 127.0.0.1 trajectory_infinity.json
 }
 ```
 
+В примерах `trajectory_infinity.json`, `trajectory_infinity_squer.json` и `trajectory_infinity_star.json` эти настройки уже вынесены в JSON. Чтобы запретить опускание плеча ниже уровня, поменяйте `allowShoulderBelowLevel` на `false` в нужном файле траектории.
+
 Если при `allowShoulderBelowLevel: false` программа пишет, что точка отклонена по лимиту плеча, посмотрите напечатанные текущие суставы и сравните J2 в горизонтальном/разрешённом положении. Если запрет срабатывает наоборот, поменяйте `shoulderBelowLevelWhenJ2Less` на `false` или скорректируйте `shoulderLevelJ2Deg`.
 
 Важно: `autoViaZ` — не полноценный 3D-планировщик коллизий. Он помогает обойти проблемный прямой LIN-сегмент, но реальные столкновения всё равно контролируются realtime-состоянием робота (`collisionState`, safety stop, `main_code/sub_code`) во время движения.
