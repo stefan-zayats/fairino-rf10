@@ -156,10 +156,13 @@ static bool QueueMove(
     }
 
     var pose = ToPose(plannedPoint.Point);
-    var targetJoint = CloneJoint(plannedPoint.Joint);
-    if (targetJoint is null || !moveJ)
+    var targetJoint = new JointPos(new double[6]);
+    if (plannedPoint.HasJoint && moveJ)
     {
-        targetJoint = new JointPos(new double[6]);
+        targetJoint = CloneJoint(plannedPoint.Joint);
+    }
+    else
+    {
         var ikCode = ResolveRuntimeIk(robot, pose, currentJoint, moveJ, plannedPoint.Label, ref targetJoint);
         if (ikCode != 0)
         {
@@ -325,7 +328,7 @@ static bool TryAppendLinearPlan(
             {
                 foreach (var viaPoint in viaPoints)
                 {
-                    if (viaPoint.Joint != null)
+                    if (viaPoint.HasJoint)
                     {
                         linearTravelDeg += JointTravelDeg(refJoint, viaPoint.Joint);
                         refJoint = viaPoint.Joint;
@@ -391,7 +394,7 @@ static void AddIkCandidate(List<IkCandidate> candidates, JointPos joint, string 
         return;
     }
 
-    candidates.Add(new IkCandidate(CloneJoint(joint)!, label));
+    candidates.Add(new IkCandidate(CloneJoint(joint), label));
 }
 
 static bool TryBuildViaPath(Robot robot, DescPose fromPose, DescPose targetPose, JointPos startJoint, string targetLabel, TrajectoryConfig config, out List<PlannedPoint> viaPoints, out JointPos endJoint)
@@ -645,13 +648,8 @@ static CartPoint ClonePoint(CartPoint point)
     };
 }
 
-static JointPos? CloneJoint(JointPos? joint)
+static JointPos CloneJoint(JointPos joint)
 {
-    if (joint is null)
-    {
-        return null;
-    }
-
     return new JointPos(joint.jPos.ToArray());
 }
 
@@ -817,12 +815,22 @@ internal sealed class PlannedPoint
     {
         Point = point;
         Label = label;
+        Joint = new JointPos(new double[6]);
+        HasJoint = false;
+    }
+
+    public PlannedPoint(CartPoint point, string label, JointPos joint)
+    {
+        Point = point;
+        Label = label;
         Joint = joint;
+        HasJoint = true;
     }
 
     public CartPoint Point { get; }
     public string Label { get; }
-    public JointPos? Joint { get; }
+    public JointPos Joint { get; }
+    public bool HasJoint { get; }
 }
 
 internal sealed class IkCandidate
