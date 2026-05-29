@@ -52,7 +52,9 @@ dotnet run -- 127.0.0.1 trajectory_infinity.json
 - `waitMotionDone` — ждать завершения каждой точки.
 - `startPointWithMoveJEachLoop` — входить в первую точку цикла через `MoveJ` (`true`) или идти непрерывно `MoveL` (`false`).
 - `motionDonePollMs` — период опроса завершения движения.
-- `loopCount` — количество циклов: `0` = бесконечно.
+- `queuePollMs` — период опроса очереди робота, когда программа ограничивает предварительную постановку команд в очередь.
+- `maxQueuedMotionSegments` — максимум заранее поставленных сегментов при `waitMotionDone: false`; по умолчанию `20`. Это не даёт программе мгновенно закинуть сотни циклов в контроллер, поэтому `Ctrl+C` остаётся управляемой остановкой, а очередь не забивается до `255`. Значение `0` отключает ограничитель.
+- `loopCount` — количество циклов: `0` = бесконечно. Даже при конечном `loopCount` и `waitMotionDone: false` программа после постановки команд остаётся запущенной и ждёт опустошения очереди, чтобы `Ctrl+C` мог остановить уже поставленное движение.
 - `points` — список поз `{x,y,z,rx,ry,rz}`.
 
 
@@ -67,6 +69,8 @@ dotnet run -- 127.0.0.1 trajectory_infinity.json
 {
   "blendRadius": 20,
   "waitMotionDone": false,
+  "maxQueuedMotionSegments": 20,
+  "queuePollMs": 30,
   "startPointWithMoveJEachLoop": false
 }
 ```

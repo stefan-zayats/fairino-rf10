@@ -121,6 +121,11 @@ try
             }
         }
     }
+
+    if (!stopRequested && !config.WaitMotionDone)
+    {
+        WaitForQueuedMotionToFinish(robot, config, ref stopRequested, ref stopCommandSent);
+    }
 }
 finally
 {
@@ -152,6 +157,11 @@ static bool QueueMove(
         Console.WriteLine($"Collision/safety stop detected {collisionErr}. Abort trajectory.");
         stopRequested = true;
         RequestSafeStop(robot, "collision/safety state before move", ref stopCommandSent);
+        return false;
+    }
+
+    if (!(waitMotionDone ?? config.WaitMotionDone) && !WaitForQueueCapacity(robot, config, $"before point #{pointIndex + 1}", ref stopRequested, ref stopCommandSent))
+    {
         return false;
     }
 
@@ -600,6 +610,87 @@ static void PrintRobotState(Robot robot, string stage)
     Console.WriteLine($"Robot state at {stage}: collisionState={pkg.collisionState}, estop={pkg.EmergencyStop}, safety0={pkg.safety_stop0_state}, safety1={pkg.safety_stop1_state}, main_code={pkg.main_code}, sub_code={pkg.sub_code}, robot_mode={pkg.robot_mode}, robot_state={pkg.robot_state}, motion_done={pkg.motion_done}, queue_len={pkg.mc_queue_len}");
 }
 
+static bool WaitForQueueCapacity(Robot robot, TrajectoryConfig config, string stage, ref bool stopRequested, ref bool stopCommandSent)
+{
+    if (config.MaxQueuedMotionSegments <= 0)
+    {
+        return true;
+    }
+
+    var printedWait = false;
+    while (!stopRequested)
+    {
+        var pkg = new ROBOT_STATE_PKG();
+        var stateCode = robot.GetRobotRealTimeState(ref pkg);
+        if (stateCode != 0)
+        {
+            Console.WriteLine($"Queue throttle skipped at {stage}: GetRobotRealTimeState err={stateCode}");
+            return true;
+        }
+
+        if (pkg.collisionState == 1 || pkg.EmergencyStop == 1 || pkg.main_code != 0 || pkg.sub_code != 0 || pkg.safety_stop0_state == 1 || pkg.safety_stop1_state == 1)
+        {
+            Console.WriteLine($"Collision/safety stop detected while waiting queue capacity at {stage}: collisionState={pkg.collisionState}, estop={pkg.EmergencyStop}, safety0={pkg.safety_stop0_state}, safety1={pkg.safety_stop1_state}, main_code={pkg.main_code}, sub_code={pkg.sub_code}, robot_mode={pkg.robot_mode}, robot_state={pkg.robot_state}, motion_done={pkg.motion_done}, queue_len={pkg.mc_queue_len}");
+            stopRequested = true;
+            RequestSafeStop(robot, "collision/safety state while waiting queue capacity", ref stopCommandSent);
+            return false;
+        }
+
+        if (pkg.mc_queue_len < config.MaxQueuedMotionSegments)
+        {
+            return true;
+        }
+
+        if (!printedWait)
+        {
+            Console.WriteLine($"Queue throttle: queue_len={pkg.mc_queue_len} >= maxQueuedMotionSegments={config.MaxQueuedMotionSegments}. Wait before queuing more points. Press Ctrl+C to stop.");
+            printedWait = true;
+        }
+
+        Thread.Sleep(Math.Max(1, config.QueuePollMs));
+    }
+
+    RequestSafeStop(robot, "stop request while waiting queue capacity", ref stopCommandSent);
+    return false;
+}
+
+static bool WaitForQueuedMotionToFinish(Robot robot, TrajectoryConfig config, ref bool stopRequested, ref bool stopCommandSent)
+{
+    Console.WriteLine("All requested loops are queued. Wait for robot queue to finish. Press Ctrl+C to stop.");
+
+    while (!stopRequested)
+    {
+        var pkg = new ROBOT_STATE_PKG();
+        var stateCode = robot.GetRobotRealTimeState(ref pkg);
+        if (stateCode != 0)
+        {
+            Console.WriteLine($"Wait for queued motion failed: GetRobotRealTimeState err={stateCode}");
+            stopRequested = true;
+            RequestSafeStop(robot, "queued motion state polling failed", ref stopCommandSent);
+            return false;
+        }
+
+        if (pkg.collisionState == 1 || pkg.EmergencyStop == 1 || pkg.main_code != 0 || pkg.sub_code != 0 || pkg.safety_stop0_state == 1 || pkg.safety_stop1_state == 1)
+        {
+            Console.WriteLine($"Collision/safety stop detected while waiting queued motion: collisionState={pkg.collisionState}, estop={pkg.EmergencyStop}, safety0={pkg.safety_stop0_state}, safety1={pkg.safety_stop1_state}, main_code={pkg.main_code}, sub_code={pkg.sub_code}, robot_mode={pkg.robot_mode}, robot_state={pkg.robot_state}, motion_done={pkg.motion_done}, queue_len={pkg.mc_queue_len}");
+            stopRequested = true;
+            RequestSafeStop(robot, "collision/safety state while waiting queued motion", ref stopCommandSent);
+            return false;
+        }
+
+        if (pkg.mc_queue_len == 0 && pkg.motion_done == 1)
+        {
+            Console.WriteLine("Queued motion finished.");
+            return true;
+        }
+
+        Thread.Sleep(Math.Max(1, config.QueuePollMs));
+    }
+
+    RequestSafeStop(robot, "stop request while waiting queued motion", ref stopCommandSent);
+    return false;
+}
+
 static void RequestSafeStop(Robot robot, string reason, ref bool stopCommandSent)
 {
     if (stopCommandSent)
@@ -855,6 +946,8 @@ internal sealed class TrajectoryConfig
     public float BlendRadius { get; set; } = 5;
     public bool WaitMotionDone { get; set; } = true;
     public int MotionDonePollMs { get; set; } = 30;
+    public int QueuePollMs { get; set; } = 30;
+    public int MaxQueuedMotionSegments { get; set; } = 20;
     public int LoopCount { get; set; } = 0;
     public bool PrecheckPathWithIk { get; set; } = true;
     public bool StartPointWithMoveJEachLoop { get; set; } = true;
