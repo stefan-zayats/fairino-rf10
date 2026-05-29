@@ -7,6 +7,8 @@
   "blendRadius": 5,
   "waitMotionDone": true,
   "motionDonePollMs": 30,
+  "queuePollMs": 30,
+  "maxQueuedMotionSegments": 20,
   "loopCount": 0,
   "points": [
     { "x": 500, "y": 0, "z": 100, "rx": 180, "ry": 0, "rz": 0 },
