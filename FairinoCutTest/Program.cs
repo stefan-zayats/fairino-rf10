@@ -182,6 +182,14 @@ static bool QueueMove(
         }
     }
 
+    if (!CheckShoulderLevel(targetJoint, config, plannedPoint.Label, out var shoulderMessage))
+    {
+        Console.WriteLine($"Shoulder level limit rejected point #{pointIndex + 1} ({plannedPoint.Label}): {shoulderMessage}");
+        stopRequested = true;
+        RequestSafeStop(robot, "shoulder level limit", ref stopCommandSent);
+        return false;
+    }
+
     var moveCode = moveJ
         ? robot.MoveJ(targetJoint, pose, config.Tool, config.User, config.Velocity, config.Acceleration, config.Ovl, exaxis, -1, 0, pose)
         : robot.MoveL(targetJoint, pose, config.Tool, config.User, config.Velocity, config.Acceleration, config.Ovl, config.BlendRadius, exaxis, 0, 0, pose);
@@ -265,6 +273,13 @@ static MotionPlanResult BuildMotionPlan(Robot robot, TrajectoryConfig config, Jo
 
     foreach (var candidate in firstCandidates)
     {
+        if (!CheckShoulderLevel(candidate.Joint, config, $"source #1, {candidate.Label}", out var shoulderMessage))
+        {
+            lastFailure = SegmentCheckResult.Fail(113, shoulderMessage);
+            Console.WriteLine($"Precheck: first-point IK {candidate.Label} rejected by shoulder level limit: {shoulderMessage}");
+            continue;
+        }
+
         var planned = new List<PlannedPoint>
         {
             new PlannedPoint(ClonePoint(firstPoint), $"source #1, {candidate.Label}", CloneJoint(candidate.Joint))
@@ -474,6 +489,11 @@ static SegmentCheckResult CheckLinearSegment(Robot robot, DescPose fromPose, Des
         if (!jointStepCheck.Ok)
         {
             return SegmentCheckResult.Fail(14, $"joint jump on {jointStepCheck.AxisName}: {FormatNumber(jointStepCheck.DeltaDeg)} deg > limit={FormatNumber(jointStepCheck.LimitDeg)} at {sampleLabel}; delta=({FormatJointDelta(refJoint, sampleJoint)}); fromJ=({FormatJoint(refJoint)}) toJ=({FormatJoint(sampleJoint)})");
+        }
+
+        if (!CheckShoulderLevel(sampleJoint, config, sampleLabel, out var shoulderMessage))
+        {
+            return SegmentCheckResult.Fail(113, shoulderMessage);
         }
 
         refJoint = sampleJoint;
@@ -773,6 +793,29 @@ static double OrientationDistanceDeg(DescPose a, DescPose b)
     return Math.Max(Math.Max(Math.Abs(a.rpy.rx - b.rpy.rx), Math.Abs(a.rpy.ry - b.rpy.ry)), Math.Abs(a.rpy.rz - b.rpy.rz));
 }
 
+static bool CheckShoulderLevel(JointPos joint, TrajectoryConfig config, string label, out string message)
+{
+    message = string.Empty;
+    if (config.AllowShoulderBelowLevel || joint.jPos.Length < 2)
+    {
+        return true;
+    }
+
+    var joint2 = joint.jPos[1];
+    var isBelowLevel = config.ShoulderBelowLevelWhenJ2Less
+        ? joint2 < config.ShoulderLevelJ2Deg
+        : joint2 > config.ShoulderLevelJ2Deg;
+
+    if (!isBelowLevel)
+    {
+        return true;
+    }
+
+    var comparator = config.ShoulderBelowLevelWhenJ2Less ? "<" : ">";
+    message = $"{label}: J2={FormatNumber(joint2)} deg {comparator} shoulderLevelJ2Deg={FormatNumber(config.ShoulderLevelJ2Deg)} deg; allowShoulderBelowLevel=false";
+    return false;
+}
+
 static JointStepCheck CheckJointStep(JointPos from, JointPos to, TrajectoryConfig config)
 {
     var count = Math.Min(from.jPos.Length, to.jPos.Length);
@@ -953,6 +996,9 @@ internal sealed class TrajectoryConfig
     public bool StartPointWithMoveJEachLoop { get; set; } = true;
     public bool UseCurrentTcpOrientation { get; set; } = false;
     public double PathCheckStepMm { get; set; } = 25;
+    public bool AllowShoulderBelowLevel { get; set; } = true;
+    public double ShoulderLevelJ2Deg { get; set; } = 0;
+    public bool ShoulderBelowLevelWhenJ2Less { get; set; } = true;
     public double MaxJointStepDeg { get; set; } = 45;
     public double[]? MaxJointStepDegByAxis { get; set; }
     public double? AutoViaZ { get; set; }

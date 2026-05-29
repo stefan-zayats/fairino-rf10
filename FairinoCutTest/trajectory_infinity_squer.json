@@ -9,6 +9,9 @@
   "motionDonePollMs": 30,
   "queuePollMs": 30,
   "maxQueuedMotionSegments": 20,
+  "allowShoulderBelowLevel": true,
+  "shoulderLevelJ2Deg": 0,
+  "shoulderBelowLevelWhenJ2Less": true,
   "loopCount": 4,
   "points": [
     { "x": 300, "y": -200, "z": 120, "rx": 180, "ry": 0, "rz": 0 },
