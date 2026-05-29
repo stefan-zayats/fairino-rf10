@@ -811,7 +811,7 @@ internal sealed class JointStepCheck
 
 internal sealed class PlannedPoint
 {
-    public PlannedPoint(CartPoint point, string label)
+    public PlannedPoint(CartPoint point, string label, JointPos? joint = null)
     {
         Point = point;
         Label = label;
