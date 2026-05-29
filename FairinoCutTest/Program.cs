@@ -123,7 +123,8 @@ try
             var pose = ToPose(point);
 
             JointPos targetJoint = new JointPos(new double[6]);
-            var ikCode = robot.GetInverseKinRef(0, pose, currentJoint, ref targetJoint);
+            var isFirstPoint = i == 0 && config.StartPointWithMoveJEachLoop;
+            var ikCode = ResolveRuntimeIk(robot, pose, currentJoint, isFirstPoint, plannedPoint.Label, ref targetJoint);
             if (ikCode != 0)
             {
                 Console.WriteLine($"IK failed at planned point #{i + 1} ({plannedPoint.Label}). err={ikCode}. point={FormatPoint(point)} refJ=({FormatJoint(currentJoint)})");
@@ -131,7 +132,6 @@ try
                 break;
             }
 
-            var isFirstPoint = i == 0 && config.StartPointWithMoveJEachLoop;
             int moveCode;
             if (isFirstPoint)
             {
@@ -218,9 +218,10 @@ static MotionPlanResult BuildMotionPlan(Robot robot, TrajectoryConfig config, Jo
         var targetLabel = $"source #{i + 1}";
         var firstPointUsesMoveJ = i == 0 && config.StartPointWithMoveJEachLoop;
 
-        if (!TrySolveIk(robot, targetPose, refJoint, targetLabel, out var targetJoint, out var ikError))
+        var allowFreeIkFallback = firstPointUsesMoveJ;
+        if (!TrySolveIk(robot, targetPose, refJoint, targetLabel, allowFreeIkFallback, out var targetJoint, out var ikError))
         {
-            PrintIkFixHints(point);
+            PrintIkFixHints(point, firstPointUsesMoveJ);
             return MotionPlanResult.Failed(ikError, planned);
         }
 
@@ -323,7 +324,7 @@ static SegmentCheckResult CheckLinearSegment(Robot robot, DescPose fromPose, Des
         var samplePose = LerpPose(fromPose, toPose, t);
         var sampleLabel = $"{label} sample {step}/{steps}";
 
-        if (!TrySolveIk(robot, samplePose, refJoint, sampleLabel, out var sampleJoint, out var ikError))
+        if (!TrySolveIk(robot, samplePose, refJoint, sampleLabel, allowFreeIkFallback: false, out var sampleJoint, out var ikError))
         {
             return SegmentCheckResult.Fail(ikError, $"IK has no solution at {sampleLabel}, pose={FormatPose(samplePose)}, refJ=({FormatJoint(refJoint)})");
         }
@@ -341,7 +342,7 @@ static SegmentCheckResult CheckLinearSegment(Robot robot, DescPose fromPose, Des
     return SegmentCheckResult.Success();
 }
 
-static bool TrySolveIk(Robot robot, DescPose pose, JointPos refJoint, string label, out JointPos targetJoint, out int errorCode)
+static bool TrySolveIk(Robot robot, DescPose pose, JointPos refJoint, string label, bool allowFreeIkFallback, out JointPos targetJoint, out int errorCode)
 {
     targetJoint = new JointPos(new double[6]);
     errorCode = 0;
@@ -355,22 +356,61 @@ static bool TrySolveIk(Robot robot, DescPose pose, JointPos refJoint, string lab
         return false;
     }
 
-    if (!hasSolution)
+    if (hasSolution)
     {
-        Console.WriteLine($"Precheck: IK has no solution at {label}: pose={FormatPose(pose)} with refJ=({FormatJoint(refJoint)})");
-        errorCode = 112;
-        return false;
-    }
+        var ikCode = robot.GetInverseKinRef(0, pose, refJoint, ref targetJoint);
+        if (ikCode == 0)
+        {
+            return true;
+        }
 
-    var ikCode = robot.GetInverseKinRef(0, pose, refJoint, ref targetJoint);
-    if (ikCode != 0)
-    {
         Console.WriteLine($"Precheck: GetInverseKinRef failed at {label}. err={ikCode}, pose={FormatPose(pose)}, refJ=({FormatJoint(refJoint)})");
         errorCode = ikCode;
+    }
+    else
+    {
+        Console.WriteLine($"Precheck: IK has no solution at {label} with current reference: pose={FormatPose(pose)} refJ=({FormatJoint(refJoint)})");
+        errorCode = 112;
+    }
+
+    if (!allowFreeIkFallback)
+    {
         return false;
     }
 
+    var freeIkJoint = new JointPos(new double[6]);
+    var freeIkCode = robot.GetInverseKin(0, pose, -1, ref freeIkJoint);
+    if (freeIkCode != 0)
+    {
+        Console.WriteLine($"Precheck: free IK fallback also failed at {label}. err={freeIkCode}, pose={FormatPose(pose)}");
+        errorCode = freeIkCode;
+        return false;
+    }
+
+    targetJoint = freeIkJoint;
+    Console.WriteLine($"Precheck: free IK fallback accepted at {label}; use MoveJ to switch configuration. targetJ=({FormatJoint(targetJoint)})");
+    errorCode = 0;
     return true;
+}
+
+
+static int ResolveRuntimeIk(Robot robot, DescPose pose, JointPos currentJoint, bool isFirstPointMoveJ, string label, ref JointPos targetJoint)
+{
+    var ikCode = robot.GetInverseKinRef(0, pose, currentJoint, ref targetJoint);
+    if (ikCode == 0 || !isFirstPointMoveJ)
+    {
+        return ikCode;
+    }
+
+    Console.WriteLine($"Runtime IK by current reference failed at first MoveJ point ({label}). err={ikCode}. Try free IK fallback.");
+    var freeIkJoint = new JointPos(new double[6]);
+    var freeIkCode = robot.GetInverseKin(0, pose, -1, ref freeIkJoint);
+    if (freeIkCode == 0)
+    {
+        targetJoint = freeIkJoint;
+    }
+
+    return freeIkCode;
 }
 
 static void ApplyCurrentTcpOrientation(TrajectoryConfig config, DescPose currentTcp)
@@ -383,10 +423,17 @@ static void ApplyCurrentTcpOrientation(TrajectoryConfig config, DescPose current
     }
 }
 
-static void PrintIkFixHints(CartPoint point)
+static void PrintIkFixHints(CartPoint point, bool firstPointUsesMoveJ)
 {
-    Console.WriteLine($"Hint: endpoint itself is unreachable for current joint reference: {FormatPoint(point)}");
-    Console.WriteLine("Hint: use the RX/RY/RZ that the simulator shows after 'Calculate joints', reduce far X/Y values, or enable useCurrentTcpOrientation.");
+    Console.WriteLine($"Hint: endpoint is unreachable for the current joint reference: {FormatPoint(point)}");
+    if (firstPointUsesMoveJ)
+    {
+        Console.WriteLine("Hint: even free IK could not find a first-point solution. The point/orientation is outside the robot workspace or conflicts with limits.");
+    }
+    else
+    {
+        Console.WriteLine("Hint: for MoveL this usually means the straight segment cannot keep one continuous joint configuration. Reduce X/Y, change RX/RY/RZ, or set autoViaZ.");
+    }
 }
 
 static bool CheckCollisionState(Robot robot, string stage, out string stateSummary)
