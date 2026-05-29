@@ -75,7 +75,7 @@ try
         Console.WriteLine($"Use current TCP orientation for all points: rx={FormatNumber(currentTcp.rpy.rx)}, ry={FormatNumber(currentTcp.rpy.ry)}, rz={FormatNumber(currentTcp.rpy.rz)}");
     }
 
-    var motionPlan = BuildMotionPlan(robot, config, currentJoint, currentTcp, tcpCode == 0);
+    var motionPlan = BuildMotionPlan(robot, config, currentJoint);
     if (config.PrecheckPathWithIk && motionPlan.ErrorCode != 0)
     {
         Console.WriteLine("Trajectory precheck failed. Fix points/config and retry.");
@@ -87,6 +87,15 @@ try
     {
         Console.WriteLine("Motion plan invalid. Need at least 2 planned points.");
         return;
+    }
+
+    if (!config.StartPointWithMoveJEachLoop)
+    {
+        Console.WriteLine("Move to trajectory start with MoveJ...");
+        if (!QueueMove(robot, config, exaxis, plannedPoints[0], 0, currentJoint, moveJ: true, ref currentJoint, ref stopRequested, ref stopCommandSent, waitMotionDone: true))
+        {
+            return;
+        }
     }
 
     var loopIndex = 0;
@@ -102,81 +111,13 @@ try
             break;
         }
 
-        for (var i = 0; i < plannedPoints.Count; i++)
+        var startIndex = !config.StartPointWithMoveJEachLoop && loopIndex == 1 ? 1 : 0;
+        for (var i = startIndex; i < plannedPoints.Count; i++)
         {
-            if (stopRequested)
+            var moveJ = i == 0 && config.StartPointWithMoveJEachLoop;
+            if (!QueueMove(robot, config, exaxis, plannedPoints[i], i, currentJoint, moveJ, ref currentJoint, ref stopRequested, ref stopCommandSent))
             {
-                RequestSafeStop(robot, "stop request before next point", ref stopCommandSent);
                 break;
-            }
-
-            if (CheckCollisionState(robot, $"before point #{i + 1}", out var collisionErr))
-            {
-                Console.WriteLine($"Collision/safety stop detected {collisionErr}. Abort trajectory.");
-                stopRequested = true;
-                RequestSafeStop(robot, "collision/safety state before move", ref stopCommandSent);
-                break;
-            }
-
-            var plannedPoint = plannedPoints[i];
-            var point = plannedPoint.Point;
-            var pose = ToPose(point);
-
-            JointPos targetJoint = new JointPos(new double[6]);
-            var isFirstPoint = i == 0 && config.StartPointWithMoveJEachLoop;
-            var ikCode = ResolveRuntimeIk(robot, pose, currentJoint, isFirstPoint, plannedPoint.Label, ref targetJoint);
-            if (ikCode != 0)
-            {
-                Console.WriteLine($"IK failed at planned point #{i + 1} ({plannedPoint.Label}). err={ikCode}. point={FormatPoint(point)} refJ=({FormatJoint(currentJoint)})");
-                stopRequested = true;
-                break;
-            }
-
-            int moveCode;
-            if (isFirstPoint)
-            {
-                moveCode = robot.MoveJ(targetJoint, pose, config.Tool, config.User, config.Velocity, config.Acceleration, config.Ovl, exaxis, -1, 0, pose);
-            }
-            else
-            {
-                moveCode = robot.MoveL(targetJoint, pose, config.Tool, config.User, config.Velocity, config.Acceleration, config.Ovl, config.BlendRadius, exaxis, 0, 0, pose);
-            }
-
-            if (moveCode != 0)
-            {
-                Console.WriteLine($"{(isFirstPoint ? "MoveJ" : "MoveL")} failed at planned point #{i + 1} ({plannedPoint.Label}) {FormatPoint(point)}, err={moveCode}");
-                PrintRobotState(robot, "after failed move command");
-                stopRequested = true;
-                RequestSafeStop(robot, "move command failed", ref stopCommandSent);
-                break;
-            }
-
-            currentJoint = targetJoint;
-            Console.WriteLine($"Queued {(isFirstPoint ? "MoveJ" : "MoveL")} to planned point #{i + 1} ({plannedPoint.Label}) joints=({FormatJoint(targetJoint)})");
-
-            if (config.WaitMotionDone)
-            {
-                byte done = 0;
-                do
-                {
-                    Thread.Sleep(config.MotionDonePollMs);
-                    var doneCode = robot.GetRobotMotionDone(ref done);
-                    if (doneCode != 0)
-                    {
-                        Console.WriteLine($"GetRobotMotionDone failed. err={doneCode}");
-                        stopRequested = true;
-                        RequestSafeStop(robot, "motion done polling failed", ref stopCommandSent);
-                        break;
-                    }
-
-                    if (CheckCollisionState(robot, $"after point #{i + 1}", out collisionErr))
-                    {
-                        Console.WriteLine($"Collision/safety stop detected {collisionErr}. Abort trajectory.");
-                        stopRequested = true;
-                        RequestSafeStop(robot, "collision/safety state after move", ref stopCommandSent);
-                        break;
-                    }
-                } while (!stopRequested && done == 0);
             }
         }
     }
@@ -187,7 +128,98 @@ finally
     Console.WriteLine("RPC closed.");
 }
 
-static MotionPlanResult BuildMotionPlan(Robot robot, TrajectoryConfig config, JointPos startJoint, DescPose currentTcp, bool hasCurrentTcp)
+static bool QueueMove(
+    Robot robot,
+    TrajectoryConfig config,
+    ExaxisPos exaxis,
+    PlannedPoint plannedPoint,
+    int pointIndex,
+    JointPos currentJoint,
+    bool moveJ,
+    ref JointPos nextJoint,
+    ref bool stopRequested,
+    ref bool stopCommandSent,
+    bool? waitMotionDone = null)
+{
+    if (stopRequested)
+    {
+        RequestSafeStop(robot, "stop request before next point", ref stopCommandSent);
+        return false;
+    }
+
+    if (CheckCollisionState(robot, $"before point #{pointIndex + 1}", out var collisionErr))
+    {
+        Console.WriteLine($"Collision/safety stop detected {collisionErr}. Abort trajectory.");
+        stopRequested = true;
+        RequestSafeStop(robot, "collision/safety state before move", ref stopCommandSent);
+        return false;
+    }
+
+    var pose = ToPose(plannedPoint.Point);
+    var targetJoint = new JointPos(new double[6]);
+    if (plannedPoint.HasJoint && moveJ)
+    {
+        targetJoint = CloneJoint(plannedPoint.Joint);
+    }
+    else
+    {
+        var ikCode = ResolveRuntimeIk(robot, pose, currentJoint, moveJ, plannedPoint.Label, ref targetJoint);
+        if (ikCode != 0)
+        {
+            Console.WriteLine($"IK failed at point #{pointIndex + 1} ({plannedPoint.Label}). err={ikCode}. point={FormatPoint(plannedPoint.Point)} refJ=({FormatJoint(currentJoint)})");
+            stopRequested = true;
+            return false;
+        }
+    }
+
+    var moveCode = moveJ
+        ? robot.MoveJ(targetJoint, pose, config.Tool, config.User, config.Velocity, config.Acceleration, config.Ovl, exaxis, -1, 0, pose)
+        : robot.MoveL(targetJoint, pose, config.Tool, config.User, config.Velocity, config.Acceleration, config.Ovl, config.BlendRadius, exaxis, 0, 0, pose);
+
+    var moveName = moveJ ? "MoveJ" : "MoveL";
+    if (moveCode != 0)
+    {
+        Console.WriteLine($"{moveName} failed at point #{pointIndex + 1} ({plannedPoint.Label}) {FormatPoint(plannedPoint.Point)}, err={moveCode}");
+        PrintRobotState(robot, "after failed move command");
+        stopRequested = true;
+        RequestSafeStop(robot, "move command failed", ref stopCommandSent);
+        return false;
+    }
+
+    nextJoint = targetJoint;
+    Console.WriteLine($"Queued {moveName} point #{pointIndex + 1} ({plannedPoint.Label})");
+
+    if (!(waitMotionDone ?? config.WaitMotionDone))
+    {
+        return true;
+    }
+
+    byte done = 0;
+    do
+    {
+        Thread.Sleep(config.MotionDonePollMs);
+        var doneCode = robot.GetRobotMotionDone(ref done);
+        if (doneCode != 0)
+        {
+            Console.WriteLine($"GetRobotMotionDone failed. err={doneCode}");
+            stopRequested = true;
+            RequestSafeStop(robot, "motion done polling failed", ref stopCommandSent);
+            return false;
+        }
+
+        if (CheckCollisionState(robot, $"after point #{pointIndex + 1}", out collisionErr))
+        {
+            Console.WriteLine($"Collision/safety stop detected {collisionErr}. Abort trajectory.");
+            stopRequested = true;
+            RequestSafeStop(robot, "collision/safety state after move", ref stopCommandSent);
+            return false;
+        }
+    } while (!stopRequested && done == 0);
+
+    return !stopRequested;
+}
+
+static MotionPlanResult BuildMotionPlan(Robot robot, TrajectoryConfig config, JointPos startJoint)
 {
     var result = new MotionPlanResult();
     result.Points.AddRange(config.Points.Select((point, index) => new PlannedPoint(ClonePoint(point), $"source #{index + 1}")));
@@ -201,37 +233,90 @@ static MotionPlanResult BuildMotionPlan(Robot robot, TrajectoryConfig config, Jo
     Console.WriteLine("Run trajectory IK/path precheck...");
     PrintRobotState(robot, "precheck start");
 
-    var planned = new List<PlannedPoint>();
-    var refJoint = startJoint;
-    var previousPose = hasCurrentTcp ? currentTcp : ToPose(config.Points[0]);
+    if (CheckCollisionState(robot, "during precheck start", out var collisionErr))
+    {
+        Console.WriteLine($"Precheck stopped by collision/safety state {collisionErr}");
+        return MotionPlanResult.Failed(-1, new List<PlannedPoint>());
+    }
 
-    for (var i = 0; i < config.Points.Count; i++)
+    var firstPoint = config.Points[0];
+    var firstPose = ToPose(firstPoint);
+    var firstCandidates = GetIkCandidates(robot, firstPose, startJoint, "source #1");
+    if (firstCandidates.Count == 0)
+    {
+        PrintIkFixHints(firstPoint, true);
+        return MotionPlanResult.Failed(112, new List<PlannedPoint>());
+    }
+
+    SegmentCheckResult? lastFailure = null;
+    List<PlannedPoint>? bestPlan = null;
+    IkCandidate? bestCandidate = null;
+    var bestScore = double.MaxValue;
+
+    foreach (var candidate in firstCandidates)
+    {
+        var planned = new List<PlannedPoint>
+        {
+            new PlannedPoint(ClonePoint(firstPoint), $"source #1, {candidate.Label}", CloneJoint(candidate.Joint))
+        };
+
+        if (TryAppendLinearPlan(robot, config, startIndex: 1, firstPose, candidate.Joint, planned, out lastFailure, out var linearTravelDeg))
+        {
+            var score = JointTravelDeg(startJoint, candidate.Joint) + linearTravelDeg;
+            Console.WriteLine($"Precheck: first-point IK {candidate.Label} accepted; jointTravelScore={FormatNumber(score)} deg; firstJ=({FormatJoint(candidate.Joint)})");
+            if (score < bestScore)
+            {
+                bestScore = score;
+                bestPlan = planned;
+                bestCandidate = candidate;
+            }
+
+            continue;
+        }
+
+        Console.WriteLine($"Precheck: first-point IK {candidate.Label} rejected: {lastFailure?.Message}");
+    }
+
+    if (bestPlan != null && bestCandidate != null)
+    {
+        result.Points.Clear();
+        result.Points.AddRange(bestPlan);
+        Console.WriteLine($"Precheck: selected first-point IK {bestCandidate.Label}; jointTravelScore={FormatNumber(bestScore)} deg; firstJ=({FormatJoint(bestCandidate.Joint)})");
+        Console.WriteLine($"Trajectory IK/path precheck passed. plannedPoints={bestPlan.Count}");
+        return result;
+    }
+
+    Console.WriteLine("Precheck: no first-point joint configuration can run the whole MoveL trajectory safely. Move J4/J5 closer to a working wrist configuration, reduce X/Y, or change RX/RY/RZ.");
+    return MotionPlanResult.Failed(lastFailure?.ErrorCode ?? 14, new List<PlannedPoint>());
+}
+
+static bool TryAppendLinearPlan(
+    Robot robot,
+    TrajectoryConfig config,
+    int startIndex,
+    DescPose startPose,
+    JointPos startJoint,
+    List<PlannedPoint> planned,
+    out SegmentCheckResult? failure,
+    out double linearTravelDeg)
+{
+    failure = null;
+    linearTravelDeg = 0;
+    var previousPose = startPose;
+    var refJoint = startJoint;
+
+    for (var i = startIndex; i < config.Points.Count; i++)
     {
         if (CheckCollisionState(robot, $"during precheck point #{i + 1}", out var collisionErr))
         {
             Console.WriteLine($"Precheck stopped by collision/safety state {collisionErr}");
-            return MotionPlanResult.Failed(-1, planned);
+            failure = SegmentCheckResult.Fail(-1, collisionErr);
+            return false;
         }
 
         var point = config.Points[i];
         var targetPose = ToPose(point);
         var targetLabel = $"source #{i + 1}";
-        var firstPointUsesMoveJ = i == 0 && config.StartPointWithMoveJEachLoop;
-
-        var allowFreeIkFallback = firstPointUsesMoveJ;
-        if (!TrySolveIk(robot, targetPose, refJoint, targetLabel, allowFreeIkFallback, out var targetJoint, out var ikError))
-        {
-            PrintIkFixHints(point, firstPointUsesMoveJ);
-            return MotionPlanResult.Failed(ikError, planned);
-        }
-
-        if (firstPointUsesMoveJ)
-        {
-            planned.Add(new PlannedPoint(ClonePoint(point), targetLabel));
-            refJoint = targetJoint;
-            previousPose = targetPose;
-            continue;
-        }
 
         var segmentCheck = CheckLinearSegment(robot, previousPose, targetPose, refJoint, targetLabel, config, out var segmentEndJoint);
         if (!segmentCheck.Ok && config.AutoViaZ.HasValue)
@@ -241,6 +326,15 @@ static MotionPlanResult BuildMotionPlan(Robot robot, TrajectoryConfig config, Jo
 
             if (TryBuildViaPath(robot, previousPose, targetPose, refJoint, targetLabel, config, out var viaPoints, out segmentEndJoint))
             {
+                foreach (var viaPoint in viaPoints)
+                {
+                    if (viaPoint.HasJoint)
+                    {
+                        linearTravelDeg += JointTravelDeg(refJoint, viaPoint.Joint);
+                        refJoint = viaPoint.Joint;
+                    }
+                }
+
                 planned.AddRange(viaPoints);
                 refJoint = segmentEndJoint;
                 previousPose = targetPose;
@@ -251,19 +345,56 @@ static MotionPlanResult BuildMotionPlan(Robot robot, TrajectoryConfig config, Jo
         if (!segmentCheck.Ok)
         {
             Console.WriteLine($"Precheck: LIN segment to {targetLabel} rejected: {segmentCheck.Message}");
-            Console.WriteLine("Precheck: robot may still reach the endpoint, but straight MoveL path is unsafe/unreachable. Reduce X/Y, change RX/RY/RZ, or set autoViaZ to try a lifted path.");
-            return MotionPlanResult.Failed(segmentCheck.ErrorCode, planned);
+            failure = segmentCheck;
+            return false;
         }
 
-        planned.Add(new PlannedPoint(ClonePoint(point), targetLabel));
+        planned.Add(new PlannedPoint(ClonePoint(point), targetLabel, CloneJoint(segmentEndJoint)));
+        linearTravelDeg += JointTravelDeg(refJoint, segmentEndJoint);
         refJoint = segmentEndJoint;
         previousPose = targetPose;
     }
 
-    result.Points.Clear();
-    result.Points.AddRange(planned);
-    Console.WriteLine($"Trajectory IK/path precheck passed. plannedPoints={planned.Count}");
-    return result;
+    return true;
+}
+
+static List<IkCandidate> GetIkCandidates(Robot robot, DescPose pose, JointPos refJoint, string label)
+{
+    var candidates = new List<IkCandidate>();
+
+    var refCandidate = new JointPos(new double[6]);
+    var refCode = robot.GetInverseKinRef(0, pose, refJoint, ref refCandidate);
+    if (refCode == 0)
+    {
+        AddIkCandidate(candidates, refCandidate, "current-ref IK");
+    }
+    else
+    {
+        Console.WriteLine($"Precheck: GetInverseKinRef failed at {label}. err={refCode}, pose={FormatPose(pose)}, refJ=({FormatJoint(refJoint)})");
+    }
+
+    for (var config = -1; config <= 7; config++)
+    {
+        var joint = new JointPos(new double[6]);
+        var code = robot.GetInverseKin(0, pose, config, ref joint);
+        if (code == 0)
+        {
+            AddIkCandidate(candidates, joint, $"config {config}");
+        }
+    }
+
+    Console.WriteLine($"Precheck: first point has {candidates.Count} unique IK candidate(s). J4/J5 branch will be selected by checking the whole LIN path.");
+    return candidates;
+}
+
+static void AddIkCandidate(List<IkCandidate> candidates, JointPos joint, string label)
+{
+    if (candidates.Any(candidate => MaxJointDelta(candidate.Joint, joint) < 0.001))
+    {
+        return;
+    }
+
+    candidates.Add(new IkCandidate(CloneJoint(joint), label));
 }
 
 static bool TryBuildViaPath(Robot robot, DescPose fromPose, DescPose targetPose, JointPos startJoint, string targetLabel, TrajectoryConfig config, out List<PlannedPoint> viaPoints, out JointPos endJoint)
@@ -300,7 +431,7 @@ static bool TryBuildViaPath(Robot robot, DescPose fromPose, DescPose targetPose,
             return false;
         }
 
-        viaPoints.Add(new PlannedPoint(ClonePoint(candidate.Point), candidate.Label));
+        viaPoints.Add(new PlannedPoint(ClonePoint(candidate.Point), candidate.Label, CloneJoint(candidateJoint)));
         refJoint = candidateJoint;
         previousPose = candidatePose;
     }
@@ -329,10 +460,10 @@ static SegmentCheckResult CheckLinearSegment(Robot robot, DescPose fromPose, Des
             return SegmentCheckResult.Fail(ikError, $"IK has no solution at {sampleLabel}, pose={FormatPose(samplePose)}, refJ=({FormatJoint(refJoint)})");
         }
 
-        var maxDelta = MaxJointDelta(refJoint, sampleJoint);
-        if (maxDelta > config.MaxJointStepDeg)
+        var jointStepCheck = CheckJointStep(refJoint, sampleJoint, config);
+        if (!jointStepCheck.Ok)
         {
-            return SegmentCheckResult.Fail(14, $"joint jump {FormatNumber(maxDelta)} deg > maxJointStepDeg={FormatNumber(config.MaxJointStepDeg)} at {sampleLabel}; fromJ=({FormatJoint(refJoint)}) toJ=({FormatJoint(sampleJoint)})");
+            return SegmentCheckResult.Fail(14, $"joint jump on {jointStepCheck.AxisName}: {FormatNumber(jointStepCheck.DeltaDeg)} deg > limit={FormatNumber(jointStepCheck.LimitDeg)} at {sampleLabel}; delta=({FormatJointDelta(refJoint, sampleJoint)}); fromJ=({FormatJoint(refJoint)}) toJ=({FormatJoint(sampleJoint)})");
         }
 
         refJoint = sampleJoint;
@@ -517,6 +648,11 @@ static CartPoint ClonePoint(CartPoint point)
     };
 }
 
+static JointPos CloneJoint(JointPos joint)
+{
+    return new JointPos(joint.jPos.ToArray());
+}
+
 static DescPose LerpPose(DescPose from, DescPose to, double t)
 {
     return new DescPose(
@@ -546,6 +682,43 @@ static double OrientationDistanceDeg(DescPose a, DescPose b)
     return Math.Max(Math.Max(Math.Abs(a.rpy.rx - b.rpy.rx), Math.Abs(a.rpy.ry - b.rpy.ry)), Math.Abs(a.rpy.rz - b.rpy.rz));
 }
 
+static JointStepCheck CheckJointStep(JointPos from, JointPos to, TrajectoryConfig config)
+{
+    var count = Math.Min(from.jPos.Length, to.jPos.Length);
+    for (var i = 0; i < count; i++)
+    {
+        var delta = Math.Abs(to.jPos[i] - from.jPos[i]);
+        var limit = GetMaxJointStepDeg(config, i);
+        if (delta > limit)
+        {
+            return JointStepCheck.Fail($"J{i + 1}", delta, limit);
+        }
+    }
+
+    return JointStepCheck.Success();
+}
+
+static double GetMaxJointStepDeg(TrajectoryConfig config, int jointIndex)
+{
+    if (config.MaxJointStepDegByAxis != null && jointIndex < config.MaxJointStepDegByAxis.Length && config.MaxJointStepDegByAxis[jointIndex] > 0)
+    {
+        return config.MaxJointStepDegByAxis[jointIndex];
+    }
+
+    return config.MaxJointStepDeg;
+}
+
+static double JointTravelDeg(JointPos from, JointPos to)
+{
+    var total = 0.0;
+    for (var i = 0; i < Math.Min(from.jPos.Length, to.jPos.Length); i++)
+    {
+        total += Math.Abs(to.jPos[i] - from.jPos[i]);
+    }
+
+    return total;
+}
+
 static double MaxJointDelta(JointPos from, JointPos to)
 {
     var max = 0.0;
@@ -555,6 +728,11 @@ static double MaxJointDelta(JointPos from, JointPos to)
     }
 
     return max;
+}
+
+static string FormatJointDelta(JointPos from, JointPos to)
+{
+    return string.Join("; ", to.jPos.Take(Math.Min(from.jPos.Length, to.jPos.Length)).Select((x, i) => $"J{i + 1}={FormatNumber(Math.Abs(x - from.jPos[i]))}"));
 }
 
 static string FormatJoint(JointPos joint)
@@ -613,15 +791,57 @@ internal sealed class SegmentCheckResult
     }
 }
 
+internal sealed class JointStepCheck
+{
+    public bool Ok { get; private set; }
+    public string AxisName { get; private set; } = string.Empty;
+    public double DeltaDeg { get; private set; }
+    public double LimitDeg { get; private set; }
+
+    public static JointStepCheck Success()
+    {
+        return new JointStepCheck { Ok = true };
+    }
+
+    public static JointStepCheck Fail(string axisName, double deltaDeg, double limitDeg)
+    {
+        return new JointStepCheck { Ok = false, AxisName = axisName, DeltaDeg = deltaDeg, LimitDeg = limitDeg };
+    }
+}
+
 internal sealed class PlannedPoint
 {
     public PlannedPoint(CartPoint point, string label)
     {
         Point = point;
         Label = label;
+        Joint = new JointPos(new double[6]);
+        HasJoint = false;
+    }
+
+    public PlannedPoint(CartPoint point, string label, JointPos joint)
+    {
+        Point = point;
+        Label = label;
+        Joint = joint;
+        HasJoint = true;
     }
 
     public CartPoint Point { get; }
+    public string Label { get; }
+    public JointPos Joint { get; }
+    public bool HasJoint { get; }
+}
+
+internal sealed class IkCandidate
+{
+    public IkCandidate(JointPos joint, string label)
+    {
+        Joint = joint;
+        Label = label;
+    }
+
+    public JointPos Joint { get; }
     public string Label { get; }
 }
 
@@ -641,6 +861,7 @@ internal sealed class TrajectoryConfig
     public bool UseCurrentTcpOrientation { get; set; } = false;
     public double PathCheckStepMm { get; set; } = 25;
     public double MaxJointStepDeg { get; set; } = 45;
+    public double[]? MaxJointStepDegByAxis { get; set; }
     public double? AutoViaZ { get; set; }
     public List<CartPoint> Points { get; set; } = new List<CartPoint>();
 }
