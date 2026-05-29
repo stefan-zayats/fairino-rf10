@@ -457,10 +457,10 @@ static SegmentCheckResult CheckLinearSegment(Robot robot, DescPose fromPose, Des
             return SegmentCheckResult.Fail(ikError, $"IK has no solution at {sampleLabel}, pose={FormatPose(samplePose)}, refJ=({FormatJoint(refJoint)})");
         }
 
-        var maxDelta = MaxJointDelta(refJoint, sampleJoint);
-        if (maxDelta > config.MaxJointStepDeg)
+        var jointStepCheck = CheckJointStep(refJoint, sampleJoint, config);
+        if (!jointStepCheck.Ok)
         {
-            return SegmentCheckResult.Fail(14, $"joint jump {FormatNumber(maxDelta)} deg > maxJointStepDeg={FormatNumber(config.MaxJointStepDeg)} at {sampleLabel}; fromJ=({FormatJoint(refJoint)}) toJ=({FormatJoint(sampleJoint)})");
+            return SegmentCheckResult.Fail(14, $"joint jump on {jointStepCheck.AxisName}: {FormatNumber(jointStepCheck.DeltaDeg)} deg > limit={FormatNumber(jointStepCheck.LimitDeg)} at {sampleLabel}; delta=({FormatJointDelta(refJoint, sampleJoint)}); fromJ=({FormatJoint(refJoint)}) toJ=({FormatJoint(sampleJoint)})");
         }
 
         refJoint = sampleJoint;
@@ -684,6 +684,32 @@ static double OrientationDistanceDeg(DescPose a, DescPose b)
     return Math.Max(Math.Max(Math.Abs(a.rpy.rx - b.rpy.rx), Math.Abs(a.rpy.ry - b.rpy.ry)), Math.Abs(a.rpy.rz - b.rpy.rz));
 }
 
+static JointStepCheck CheckJointStep(JointPos from, JointPos to, TrajectoryConfig config)
+{
+    var count = Math.Min(from.jPos.Length, to.jPos.Length);
+    for (var i = 0; i < count; i++)
+    {
+        var delta = Math.Abs(to.jPos[i] - from.jPos[i]);
+        var limit = GetMaxJointStepDeg(config, i);
+        if (delta > limit)
+        {
+            return JointStepCheck.Fail($"J{i + 1}", delta, limit);
+        }
+    }
+
+    return JointStepCheck.Success();
+}
+
+static double GetMaxJointStepDeg(TrajectoryConfig config, int jointIndex)
+{
+    if (config.MaxJointStepDegByAxis != null && jointIndex < config.MaxJointStepDegByAxis.Length && config.MaxJointStepDegByAxis[jointIndex] > 0)
+    {
+        return config.MaxJointStepDegByAxis[jointIndex];
+    }
+
+    return config.MaxJointStepDeg;
+}
+
 static double JointTravelDeg(JointPos from, JointPos to)
 {
     var total = 0.0;
@@ -704,6 +730,11 @@ static double MaxJointDelta(JointPos from, JointPos to)
     }
 
     return max;
+}
+
+static string FormatJointDelta(JointPos from, JointPos to)
+{
+    return string.Join("; ", to.jPos.Take(Math.Min(from.jPos.Length, to.jPos.Length)).Select((x, i) => $"J{i + 1}={FormatNumber(Math.Abs(x - from.jPos[i]))}"));
 }
 
 static string FormatJoint(JointPos joint)
@@ -762,6 +793,24 @@ internal sealed class SegmentCheckResult
     }
 }
 
+internal sealed class JointStepCheck
+{
+    public bool Ok { get; private set; }
+    public string AxisName { get; private set; } = string.Empty;
+    public double DeltaDeg { get; private set; }
+    public double LimitDeg { get; private set; }
+
+    public static JointStepCheck Success()
+    {
+        return new JointStepCheck { Ok = true };
+    }
+
+    public static JointStepCheck Fail(string axisName, double deltaDeg, double limitDeg)
+    {
+        return new JointStepCheck { Ok = false, AxisName = axisName, DeltaDeg = deltaDeg, LimitDeg = limitDeg };
+    }
+}
+
 internal sealed class PlannedPoint
 {
     public PlannedPoint(CartPoint point, string label, JointPos? joint = null)
@@ -804,6 +853,7 @@ internal sealed class TrajectoryConfig
     public bool UseCurrentTcpOrientation { get; set; } = false;
     public double PathCheckStepMm { get; set; } = 25;
     public double MaxJointStepDeg { get; set; } = 45;
+    public double[]? MaxJointStepDegByAxis { get; set; }
     public double? AutoViaZ { get; set; }
     public List<CartPoint> Points { get; set; } = new List<CartPoint>();
 }
