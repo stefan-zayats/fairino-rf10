@@ -567,10 +567,10 @@ static bool TrySolveLinearSampleIk(
         return true;
     }
 
-    if (firstStepFailure != null && firstStepFailureJoint != null)
+    if (firstStepFailure is { } stepFailure && firstStepFailureJoint is { } stepFailureJoint)
     {
         errorCode = 14;
-        message = $"all IK branches exceed joint-step limits at {label}; first joint jump on {firstStepFailure.AxisName}: {FormatNumber(firstStepFailure.DeltaDeg)} deg > limit={FormatNumber(firstStepFailure.LimitDeg)}; delta=({FormatJointDelta(refJoint, firstStepFailureJoint)}); fromJ=({FormatJoint(refJoint)}) toJ=({FormatJoint(firstStepFailureJoint)})";
+        message = $"all IK branches exceed joint-step limits at {label}; first joint jump on {stepFailure.AxisName}: {FormatNumber(stepFailure.DeltaDeg)} deg > limit={FormatNumber(stepFailure.LimitDeg)}; delta=({FormatJointDelta(refJoint, stepFailureJoint)}); fromJ=({FormatJoint(refJoint)}) toJ=({FormatJoint(stepFailureJoint)})";
         return false;
     }
 
@@ -637,58 +637,6 @@ static void AddLinearSampleCandidate(List<LinearSampleCandidate> candidates, Joi
 
     candidates.Add(new LinearSampleCandidate(CloneJoint(joint), label, isReferenceSolution));
 }
-
-static bool TrySolveIk(Robot robot, DescPose pose, JointPos refJoint, string label, bool allowFreeIkFallback, out JointPos targetJoint, out int errorCode)
-{
-    targetJoint = new JointPos(new double[6]);
-    errorCode = 0;
-
-    var hasSolution = false;
-    var hasSolutionCode = robot.GetInverseKinHasSolution(0, pose, refJoint, ref hasSolution);
-    if (hasSolutionCode != 0)
-    {
-        Console.WriteLine($"GetInverseKinHasSolution failed at {label}. err={hasSolutionCode}");
-        errorCode = hasSolutionCode;
-        return false;
-    }
-
-    if (hasSolution)
-    {
-        var ikCode = robot.GetInverseKinRef(0, pose, refJoint, ref targetJoint);
-        if (ikCode == 0)
-        {
-            return true;
-        }
-
-        Console.WriteLine($"Precheck: GetInverseKinRef failed at {label}. err={ikCode}, pose={FormatPose(pose)}, refJ=({FormatJoint(refJoint)})");
-        errorCode = ikCode;
-    }
-    else
-    {
-        Console.WriteLine($"Precheck: IK has no solution at {label} with current reference: pose={FormatPose(pose)} refJ=({FormatJoint(refJoint)})");
-        errorCode = 112;
-    }
-
-    if (!allowFreeIkFallback)
-    {
-        return false;
-    }
-
-    var freeIkJoint = new JointPos(new double[6]);
-    var freeIkCode = robot.GetInverseKin(0, pose, -1, ref freeIkJoint);
-    if (freeIkCode != 0)
-    {
-        Console.WriteLine($"Precheck: free IK fallback also failed at {label}. err={freeIkCode}, pose={FormatPose(pose)}");
-        errorCode = freeIkCode;
-        return false;
-    }
-
-    targetJoint = freeIkJoint;
-    Console.WriteLine($"Precheck: free IK fallback accepted at {label}; use MoveJ to switch configuration. targetJ=({FormatJoint(targetJoint)})");
-    errorCode = 0;
-    return true;
-}
-
 
 static int ResolveRuntimeIk(Robot robot, DescPose pose, JointPos currentJoint, bool isFirstPointMoveJ, string label, ref JointPos targetJoint)
 {
