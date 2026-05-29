@@ -167,7 +167,7 @@ static bool QueueMove(
 
     var pose = ToPose(plannedPoint.Point);
     var targetJoint = new JointPos(new double[6]);
-    if (plannedPoint.HasJoint && moveJ)
+    if (plannedPoint.HasJoint)
     {
         targetJoint = CloneJoint(plannedPoint.Joint);
     }
@@ -408,7 +408,7 @@ static List<IkCandidate> GetIkCandidates(Robot robot, DescPose pose, JointPos re
         }
     }
 
-    Console.WriteLine($"Precheck: first point has {candidates.Count} unique IK candidate(s). J4/J5 branch will be selected by checking the whole LIN path.");
+    Console.WriteLine($"Precheck: first point has {candidates.Count} unique IK candidate(s). IK branch will be selected by checking the whole LIN path and shoulder-level constraint.");
     return candidates;
 }
 
@@ -480,20 +480,10 @@ static SegmentCheckResult CheckLinearSegment(Robot robot, DescPose fromPose, Des
         var samplePose = LerpPose(fromPose, toPose, t);
         var sampleLabel = $"{label} sample {step}/{steps}";
 
-        if (!TrySolveIk(robot, samplePose, refJoint, sampleLabel, allowFreeIkFallback: false, out var sampleJoint, out var ikError))
+        var sampleCheck = TrySolveLinearSampleIk(robot, samplePose, refJoint, sampleLabel, config, out var sampleJoint, out var ikError, out var ikMessage);
+        if (!sampleCheck)
         {
-            return SegmentCheckResult.Fail(ikError, $"IK has no solution at {sampleLabel}, pose={FormatPose(samplePose)}, refJ=({FormatJoint(refJoint)})");
-        }
-
-        var jointStepCheck = CheckJointStep(refJoint, sampleJoint, config);
-        if (!jointStepCheck.Ok)
-        {
-            return SegmentCheckResult.Fail(14, $"joint jump on {jointStepCheck.AxisName}: {FormatNumber(jointStepCheck.DeltaDeg)} deg > limit={FormatNumber(jointStepCheck.LimitDeg)} at {sampleLabel}; delta=({FormatJointDelta(refJoint, sampleJoint)}); fromJ=({FormatJoint(refJoint)}) toJ=({FormatJoint(sampleJoint)})");
-        }
-
-        if (!CheckShoulderLevel(sampleJoint, config, sampleLabel, out var shoulderMessage))
-        {
-            return SegmentCheckResult.Fail(113, shoulderMessage);
+            return SegmentCheckResult.Fail(ikError, ikMessage);
         }
 
         refJoint = sampleJoint;
@@ -501,6 +491,151 @@ static SegmentCheckResult CheckLinearSegment(Robot robot, DescPose fromPose, Des
 
     endJoint = refJoint;
     return SegmentCheckResult.Success();
+}
+
+static bool TrySolveLinearSampleIk(
+    Robot robot,
+    DescPose pose,
+    JointPos refJoint,
+    string label,
+    TrajectoryConfig config,
+    out JointPos targetJoint,
+    out int errorCode,
+    out string message)
+{
+    targetJoint = new JointPos(new double[6]);
+    errorCode = 112;
+    message = $"IK has no solution at {label}, pose={FormatPose(pose)}, refJ=({FormatJoint(refJoint)})";
+
+    var candidates = GetLinearSampleIkCandidates(robot, pose, refJoint, label, out var primaryErrorCode);
+    if (candidates.Count == 0)
+    {
+        errorCode = primaryErrorCode;
+        return false;
+    }
+
+    LinearSampleCandidate? bestCandidate = null;
+    var bestScore = double.MaxValue;
+    string? firstShoulderFailure = null;
+    JointStepCheck? firstStepFailure = null;
+    JointPos? firstStepFailureJoint = null;
+    var hasShoulderAllowedCandidate = false;
+
+    foreach (var candidate in candidates)
+    {
+        if (!CheckShoulderLevel(candidate.Joint, config, label, out var shoulderMessage))
+        {
+            if (firstShoulderFailure == null)
+            {
+                firstShoulderFailure = shoulderMessage;
+            }
+
+            continue;
+        }
+
+        hasShoulderAllowedCandidate = true;
+        var jointStepCheck = CheckJointStep(refJoint, candidate.Joint, config);
+        if (!jointStepCheck.Ok)
+        {
+            if (firstStepFailure == null)
+            {
+                firstStepFailure = jointStepCheck;
+                firstStepFailureJoint = candidate.Joint;
+            }
+
+            continue;
+        }
+
+        var score = JointTravelDeg(refJoint, candidate.Joint);
+        if (score < bestScore)
+        {
+            bestScore = score;
+            bestCandidate = candidate;
+        }
+    }
+
+    if (bestCandidate != null)
+    {
+        targetJoint = CloneJoint(bestCandidate.Joint);
+        if (!bestCandidate.IsReferenceSolution)
+        {
+            Console.WriteLine($"Precheck: switched IK branch at {label} to keep constraints; selected {bestCandidate.Label}, targetJ=({FormatJoint(targetJoint)})");
+        }
+
+        errorCode = 0;
+        message = string.Empty;
+        return true;
+    }
+
+    if (firstStepFailure != null && firstStepFailureJoint != null)
+    {
+        errorCode = 14;
+        message = $"all IK branches exceed joint-step limits at {label}; first joint jump on {firstStepFailure.AxisName}: {FormatNumber(firstStepFailure.DeltaDeg)} deg > limit={FormatNumber(firstStepFailure.LimitDeg)}; delta=({FormatJointDelta(refJoint, firstStepFailureJoint)}); fromJ=({FormatJoint(refJoint)}) toJ=({FormatJoint(firstStepFailureJoint)})";
+        return false;
+    }
+
+    if (!hasShoulderAllowedCandidate && firstShoulderFailure != null)
+    {
+        errorCode = 113;
+        message = $"all IK branches violate shoulder level at {label}; first violation: {firstShoulderFailure}";
+        return false;
+    }
+
+    return false;
+}
+
+static List<LinearSampleCandidate> GetLinearSampleIkCandidates(Robot robot, DescPose pose, JointPos refJoint, string label, out int primaryErrorCode)
+{
+    var candidates = new List<LinearSampleCandidate>();
+    primaryErrorCode = 112;
+
+    var hasSolution = false;
+    var hasSolutionCode = robot.GetInverseKinHasSolution(0, pose, refJoint, ref hasSolution);
+    if (hasSolutionCode != 0)
+    {
+        Console.WriteLine($"GetInverseKinHasSolution failed at {label}. err={hasSolutionCode}");
+        primaryErrorCode = hasSolutionCode;
+    }
+    else if (hasSolution)
+    {
+        var refCandidate = new JointPos(new double[6]);
+        var ikCode = robot.GetInverseKinRef(0, pose, refJoint, ref refCandidate);
+        if (ikCode == 0)
+        {
+            AddLinearSampleCandidate(candidates, refCandidate, "current-ref IK", isReferenceSolution: true);
+        }
+        else
+        {
+            Console.WriteLine($"Precheck: GetInverseKinRef failed at {label}. err={ikCode}, pose={FormatPose(pose)}, refJ=({FormatJoint(refJoint)})");
+            primaryErrorCode = ikCode;
+        }
+    }
+    else
+    {
+        Console.WriteLine($"Precheck: IK has no solution at {label} with current reference: pose={FormatPose(pose)} refJ=({FormatJoint(refJoint)})");
+    }
+
+    for (var configIndex = -1; configIndex <= 7; configIndex++)
+    {
+        var joint = new JointPos(new double[6]);
+        var code = robot.GetInverseKin(0, pose, configIndex, ref joint);
+        if (code == 0)
+        {
+            AddLinearSampleCandidate(candidates, joint, $"config {configIndex}", isReferenceSolution: false);
+        }
+    }
+
+    return candidates;
+}
+
+static void AddLinearSampleCandidate(List<LinearSampleCandidate> candidates, JointPos joint, string label, bool isReferenceSolution)
+{
+    if (candidates.Any(candidate => MaxJointDelta(candidate.Joint, joint) < 0.001))
+    {
+        return;
+    }
+
+    candidates.Add(new LinearSampleCandidate(CloneJoint(joint), label, isReferenceSolution));
 }
 
 static bool TrySolveIk(Robot robot, DescPose pose, JointPos refJoint, string label, bool allowFreeIkFallback, out JointPos targetJoint, out int errorCode)
@@ -977,6 +1112,20 @@ internal sealed class IkCandidate
 
     public JointPos Joint { get; }
     public string Label { get; }
+}
+
+internal sealed class LinearSampleCandidate
+{
+    public LinearSampleCandidate(JointPos joint, string label, bool isReferenceSolution)
+    {
+        Joint = joint;
+        Label = label;
+        IsReferenceSolution = isReferenceSolution;
+    }
+
+    public JointPos Joint { get; }
+    public string Label { get; }
+    public bool IsReferenceSolution { get; }
 }
 
 internal sealed class TrajectoryConfig
